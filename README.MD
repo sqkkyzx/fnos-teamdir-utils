@@ -27,13 +27,24 @@ fnos-dir-manager/
 ## 🛠️ 快速开始
 
 ### 1. 准备文件
-在 FNOS 的宿主机上下载镜像。
 
+下载或自行编写 docker-compose.yml 文件：
 
-### 3. 配置环境变量
-* `DEFAULT_POOL_FOR_PERSONAL_DIR`: 指定“个人文件”文件夹应该存放的存储空间编号（例如 `2` 代表 存储空间2 即`/vol2`）。
+```yaml
+services:
+  fnos-teamdir-utils:
+    image: ghcr.io/sqkkyzx/fnos-teamdir-utils
+    container_name: fnos-teamdir-utils
+    privileged: true
+    pid: host
+    restart: unless-stopped
+    environment:
+      # 这里指定“个人文件”文件夹应该存放的存储空间编号（例如 `2` 代表 存储空间2 即`/vol2`）
+      - DEFAULT_POOL_FOR_PERSONAL_DIR=2
+```
 
-### 4. 启动容器
+### 2. 启动容器
+在飞牛的 Docker 中，使用 compose 新增项目，然后构建项目。
 
 ## 🧠 工作原理
 

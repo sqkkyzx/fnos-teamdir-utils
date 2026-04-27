@@ -1,0 +1,9 @@
+services:
+  fnos-teamdir-utils:
+    image: ghcr.io/sqkkyzx/fnos-teamdir-utils
+    container_name: fnos-teamdir-utils
+    privileged: true
+    pid: host
+    restart: unless-stopped
+    environment:
+      - DEFAULT_POOL_FOR_PERSONAL_DIR=2
