@@ -1,28 +1,66 @@
 #!/bin/bash
 # 注意：此脚本的外部环境处于 Docker 容器内
 
-echo "🚀 容器启动：开始初始化目录映射..."
+# 接收环境变量，若未设置则赋予默认值
+CLEAN_MODE="${CLEAN_MODE:-0}"
+DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_PERSONAL_DIR:-2}"
 
-# 通过 heredoc 将核心逻辑打包，传给宿主机的 bash 执行
-nsenter -t 1 -m -u -i -n env DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_PERSONAL_DIR}" bash << 'EOF'
+# 通过 heredoc 将核心逻辑和环境变量传递给宿主机的 bash 执行
+nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR_PERSONAL_DIR" bash << 'EOF'
     shopt -s nullglob
-    POOL_ID="${DEFAULT_POOL_FOR_PERSONAL_DIR:-2}"
 
-    echo "🔍 开始扫描 /vol1 下的用户目录..."
+    # 统一定义日志函数，包含时间戳输出
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    }
+
+    # ==========================================
+    # 模式一：清理模式 (CLEAN_MODE=1)
+    # ==========================================
+    if [ "$CLEAN_MODE" = "1" ]; then
+        log "🧹 检测到 CLEAN_MODE=1，进入清理挂载模式..."
+        for target_mount in /vol1/*/@团队文件-*; do
+            log "  -> 发现挂载点目标: $target_mount"
+
+            if mountpoint -q "$target_mount"; then
+                umount "$target_mount"
+                log "  🔓 已卸载: $target_mount"
+            fi
+
+            if [ -d "$target_mount" ]; then
+                rmdir "$target_mount" 2>/dev/null && log "  🗑️ 已删除空挂载目录: $target_mount"
+            fi
+        done
+        log "✅ 清理任务完成。"
+        exit 0
+    fi
+
+    # ==========================================
+    # 模式二：常规挂载模式 (CLEAN_MODE=0 或空)
+    # ==========================================
+    log "🚀 启动目录映射任务 (个人主目录存储池: vol${POOL_ID})..."
+
+    # 1. 遍历 /vol1 下的用户 UID 目录
     for user_dir in /vol1/*; do
         uid=$(basename "$user_dir")
         if [[ ! "$uid" =~ ^[0-9]+$ ]]; then continue; fi
 
-        # --- 处理个人文件夹 ---
+        log "👤 正在处理用户目录 [UID: $uid]"
+
+        # 2. 处理个人文件夹
         personal_dir="/vol${POOL_ID}/${uid}/个人文件"
         if [ ! -d "$personal_dir" ]; then
+            log "  📁 个人目录不存在，开始创建并修正权限: $personal_dir"
             mkdir -p "$personal_dir"
             chown "$uid:$uid" "$personal_dir" 2>/dev/null || chown "$uid" "$personal_dir"
-            echo "📁 创建个人主目录并转移所有权: $personal_dir"
         fi
 
-        # --- 处理团队文件夹映射 ---
+        # 3. 遍历 /vol*/@team 寻找团队目录
         for team_base in /vol*/@team; do
+            if [ ! -d "$team_base" ]; then continue; fi
+            log "  📂 扫描团队基础存储池: $team_base"
+
+            # 4. 遍历具体的项目目录
             for team_dir in "$team_base"/*; do
                 if [ ! -d "$team_dir" ]; then continue; fi
 
@@ -31,37 +69,37 @@ nsenter -t 1 -m -u -i -n env DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_P
 
                 mkdir -p "$target_mount"
 
-                if ! mountpoint -q "$target_mount"; then
+                # 5. 核心逻辑：挂载状态检测与自愈修复
+                if mountpoint -q "$target_mount"; then
+                    # 获取源目录和目标目录的底层 inode 标识信息 (格式为 DeviceID:InodeID)
+                    src_stat=$(stat -c "%d:%i" "$team_dir")
+                    tgt_stat=$(stat -c "%d:%i" "$target_mount")
+
+                    if [ "$src_stat" == "$tgt_stat" ]; then
+                        log "    ✅ [$dir_name] 挂载状态正确，跳过。"
+                    else
+                        log "    ⚠️ [$dir_name] 挂载源不匹配 (可能发生过变更)，正在修复..."
+                        umount "$target_mount"
+                        mount --bind "$team_dir" "$target_mount"
+                        log "    🔄 [$dir_name] 重新绑定成功: $team_dir -> $target_mount"
+                    fi
+                else
+                    # 完全未挂载的情况
                     mount --bind "$team_dir" "$target_mount"
-                    echo "🔗 建立映射: $team_dir -> $target_mount"
+                    log "    🔗 [$dir_name] 新建映射成功: $team_dir -> $target_mount"
                 fi
             done
         done
     done
+    log "✅ 所有目录映射处理完毕。"
 EOF
-echo "✅ 挂载初始化完毕。进入守护进程状态..."
 
-# 定义清理函数
-cleanup() {
-    echo "🛑 收到停止信号：开始清理团队文件映射..."
-    nsenter -t 1 -m -u -i -n bash << 'EOF'
-        shopt -s nullglob
-        for target_mount in /vol1/*/@团队文件-*; do
-            if mountpoint -q "$target_mount"; then
-                umount "$target_mount"
-                echo "🔓 已卸载: $target_mount"
-            fi
-            if [ -d "$target_mount" ]; then
-                rmdir "$target_mount" 2>/dev/null && echo "🗑️ 已删除空挂载点: $target_mount"
-            fi
-        done
-EOF
-    echo "✅ 清理完毕，容器退出。"
-    exit 0
-}
-
-# 捕获终止信号并执行 cleanup 函数 (SIGINT 对应 Ctrl+C, SIGTERM 对应 docker stop)
-trap cleanup SIGINT SIGTERM
-
-# 保持容器运行以维持生命周期
-tail -f /dev/null
+# 判断刚才宿主机的脚本执行完后的状态，决定容器的去留
+if [ "$CLEAN_MODE" = "1" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 容器已完成清理任务，请手动结束容器"
+    tail -f /dev/null
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 挂载进程结束，进入守护状态保持容器运行..."
+    # 挂起容器，保持其 Running 状态
+    tail -f /dev/null
+fi
