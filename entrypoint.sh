@@ -4,7 +4,7 @@
 CLEAN_MODE="${CLEAN_MODE:-0}"
 DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_PERSONAL_DIR:-2}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-60}" # 轮询间隔，默认60秒
-VERSION="${VERSION:-0.1.3}"
+VERSION="${VERSION:-0.1.4}"
 
 # 1. 输出项目 Banner
 echo "#==============================#"
@@ -20,22 +20,24 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     }
 
-    # 定义核心处理函数
+    # 定义核心处理函数，接收一个参数：是否为首次运行 (1为是，0为否)
     process_mounts() {
+        local is_first_run="$1"
         # 获取宿主机上所有有效普通用户
         uids=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $3}' /etc/passwd)
 
         for uid in $uids; do
             if [ "$uid" = "65534" ]; then continue; fi
 
+            [ "$is_first_run" = "1" ] && log "👤 正在检查用户 [UID: $uid]..."
+
             # ==========================================================
             # 0. 初始化 /vol1 的用户挂载根目录
             # ==========================================================
             user_root="/vol1/${uid}"
             if [ ! -d "$user_root" ]; then
-                log "👤 检测到新用户或缺失挂载根目录 [UID: $uid]，正在初始化..."
+                log "  👤 检测到新用户挂载根目录缺失，正在初始化..."
                 mkdir -p "$user_root"
-                # 适配 FNOS 权限规范：父目录归属 UID:root，权限 771
                 chown "$uid:root" "$user_root" 2>/dev/null || chown "$uid" "$user_root"
                 chmod 771 "$user_root"
             fi
@@ -46,7 +48,6 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
             personal_base="/vol${POOL_ID}/${uid}"
             if [ ! -d "$personal_base" ]; then
                 mkdir -p "$personal_base"
-                # 适配 FNOS 权限规范：父目录归属 UID:root，权限 771
                 chown "$uid:root" "$personal_base" 2>/dev/null || chown "$uid" "$personal_base"
                 chmod 771 "$personal_base"
             fi
@@ -58,11 +59,9 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
             if [ ! -d "$personal_dir" ]; then
                 log "  📁 创建个人主目录并注入底层权限: $personal_dir"
                 mkdir -p "$personal_dir"
-                # 适配 FNOS 权限规范：子目录归属 UID:Users，权限 771
                 chown "$uid:Users" "$personal_dir" 2>/dev/null || chown "$uid" "$personal_dir"
                 chmod 771 "$personal_dir"
 
-                # 显式注入 ACL 权限，生成 '+' 号，确保被 FNOS 数据库和 SMB 识别
                 setfacl -m u::rwx,g::--x,o::--x "$personal_dir" 2>/dev/null
                 setfacl -d -m u::rwx,g::--x,o::--x "$personal_dir" 2>/dev/null
             fi
@@ -84,15 +83,18 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
                     if mountpoint -q "$target_mount"; then
                         src_stat=$(stat -c "%d:%i" "$team_dir")
                         tgt_stat=$(stat -c "%d:%i" "$target_mount")
-                        # 如果 inode 不匹配，说明挂载源变了或挂载错误，执行重挂
+
                         if [ "$src_stat" != "$tgt_stat" ]; then
-                            log "⚠️ 用户 $uid 的 [$dir_name] 挂载不一致，正在修正..."
+                            log "  ⚠️ 用户 $uid 的 [$dir_name] 挂载不一致，正在修正..."
                             umount -l "$target_mount"
                             mount --bind "$team_dir" "$target_mount"
+                        else
+                            # 仅在首次运行时，输出“状态正常，跳过”的日志
+                            [ "$is_first_run" = "1" ] && log "    ✅ [$dir_name] 挂载状态正常，已跳过。"
                         fi
                     else
                         mount --bind "$team_dir" "$target_mount"
-                        log "🔗 用户 $uid 的 [$dir_name] 挂载成功。"
+                        log "  🔗 用户 $uid 的 [$dir_name] 挂载成功。"
                     fi
                 done
             done
@@ -119,8 +121,27 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
     # 模式二：守护轮询模式 (持续运行)
     # ==========================================
     log "🚀 守护进程启动 (轮询间隔: ${CHECK_INTERVAL}s)..."
+
+    first_run_flag=1
+
     while true; do
-        process_mounts
+        if [ "$first_run_flag" = "1" ]; then
+            log "=================================================="
+            log "🚀 开始首次全量扫描与初始化 (个人存储池: vol${POOL_ID})"
+            log "=================================================="
+        fi
+
+        # 执行核心逻辑，并传入当前是否为首次运行的标记
+        process_mounts "$first_run_flag"
+
+        if [ "$first_run_flag" = "1" ]; then
+            log "=================================================="
+            log "✅ 首次初始化扫描完毕。进入静默轮询模式..."
+            log "💡 提示：后续仅在发现新用户或挂载变动时输出日志"
+            log "=================================================="
+            first_run_flag=0
+        fi
+
         sleep "$CHECK_INTERVAL"
     done
 EOF
