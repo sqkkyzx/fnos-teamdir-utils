@@ -3,8 +3,8 @@
 # 环境变量配置
 CLEAN_MODE="${CLEAN_MODE:-0}"
 DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_PERSONAL_DIR:-2}"
-CHECK_INTERVAL="${CHECK_INTERVAL:-60}" # 新增：轮询间隔，默认60秒
-VERSION="${VERSION:-0.1.2}"
+CHECK_INTERVAL="${CHECK_INTERVAL:-60}" # 轮询间隔，默认60秒
+VERSION="${VERSION:-0.1.3}"
 
 # 1. 输出项目 Banner
 echo "#==============================#"
@@ -28,23 +28,48 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
         for uid in $uids; do
             if [ "$uid" = "65534" ]; then continue; fi
 
+            # ==========================================================
+            # 0. 初始化 /vol1 的用户挂载根目录
+            # ==========================================================
             user_root="/vol1/${uid}"
-
-            # 自动创建不存在的用户家目录
             if [ ! -d "$user_root" ]; then
-                log "👤 检测到新用户或缺失目录 [UID: $uid]，正在初始化..."
+                log "👤 检测到新用户或缺失挂载根目录 [UID: $uid]，正在初始化..."
                 mkdir -p "$user_root"
-                chown "$uid:$uid" "$user_root" 2>/dev/null || chown "$uid" "$user_root"
+                # 适配 FNOS 权限规范：父目录归属 UID:root，权限 771
+                chown "$uid:root" "$user_root" 2>/dev/null || chown "$uid" "$user_root"
+                chmod 771 "$user_root"
             fi
 
-            # 1. 处理“个人文件”文件夹
-            personal_dir="/vol${POOL_ID}/${uid}/个人文件"
+            # ==========================================================
+            # 1. 初始化用户个人存储池父目录 (如 /vol2/1000)
+            # ==========================================================
+            personal_base="/vol${POOL_ID}/${uid}"
+            if [ ! -d "$personal_base" ]; then
+                mkdir -p "$personal_base"
+                # 适配 FNOS 权限规范：父目录归属 UID:root，权限 771
+                chown "$uid:root" "$personal_base" 2>/dev/null || chown "$uid" "$personal_base"
+                chmod 771 "$personal_base"
+            fi
+
+            # ==========================================================
+            # 2. 处理“个人文件”子目录，并注入 FNOS 标准 ACL (+)
+            # ==========================================================
+            personal_dir="${personal_base}/个人文件"
             if [ ! -d "$personal_dir" ]; then
+                log "  📁 创建个人主目录并注入底层权限: $personal_dir"
                 mkdir -p "$personal_dir"
-                chown "$uid:$uid" "$personal_dir" 2>/dev/null || chown "$uid" "$personal_dir"
+                # 适配 FNOS 权限规范：子目录归属 UID:Users，权限 771
+                chown "$uid:Users" "$personal_dir" 2>/dev/null || chown "$uid" "$personal_dir"
+                chmod 771 "$personal_dir"
+
+                # 显式注入 ACL 权限，生成 '+' 号，确保被 FNOS 数据库和 SMB 识别
+                setfacl -m u::rwx,g::--x,o::--x "$personal_dir" 2>/dev/null
+                setfacl -d -m u::rwx,g::--x,o::--x "$personal_dir" 2>/dev/null
             fi
 
-            # 2. 遍历团队文件挂载
+            # ==========================================================
+            # 3. 遍历团队文件挂载
+            # ==========================================================
             for team_base in /vol*/@team; do
                 [ ! -d "$team_base" ] && continue
 
