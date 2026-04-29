@@ -4,7 +4,7 @@
 CLEAN_MODE="${CLEAN_MODE:-0}"
 DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_PERSONAL_DIR:-2}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-60}" # 轮询间隔，默认60秒
-VERSION="${VERSION:-0.1.4}"
+VERSION="${VERSION:-0.1.5}"
 
 # 1. 输出项目 Banner
 echo "#==============================#"
@@ -23,20 +23,24 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
     # 定义核心处理函数，接收一个参数：是否为首次运行 (1为是，0为否)
     process_mounts() {
         local is_first_run="$1"
-        # 获取宿主机上所有有效普通用户
-        uids=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $3}' /etc/passwd)
+        # 获取宿主机上所有有效普通用户，同时提取 UID 和 用户名 (格式: UID:用户名)
+        user_list=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $3 ":" $1}' /etc/passwd)
 
-        for uid in $uids; do
+        for user_item in $user_list; do
+            # 解析出 UID 和 Username
+            uid="${user_item%%:*}"
+            username="${user_item#*:}"
+
             if [ "$uid" = "65534" ]; then continue; fi
 
-            [ "$is_first_run" = "1" ] && log "👤 正在检查用户 [UID: $uid]..."
+            [ "$is_first_run" = "1" ] && log "👤 正在检查用户 $username [UID: $uid]..."
 
             # ==========================================================
             # 0. 初始化 /vol1 的用户挂载根目录
             # ==========================================================
             user_root="/vol1/${uid}"
             if [ ! -d "$user_root" ]; then
-                log "  👤 检测到新用户挂载根目录缺失，正在初始化..."
+                log "  👤 检测到新用户 $username 挂载根目录缺失，正在初始化..."
                 mkdir -p "$user_root"
                 chown "$uid:root" "$user_root" 2>/dev/null || chown "$uid" "$user_root"
                 chmod 771 "$user_root"
@@ -57,7 +61,7 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
             # ==========================================================
             personal_dir="${personal_base}/个人文件"
             if [ ! -d "$personal_dir" ]; then
-                log "  📁 创建个人主目录并注入底层权限: $personal_dir"
+                log "  📁 为 $username 创建个人主目录并注入底层权限: $personal_dir"
                 mkdir -p "$personal_dir"
                 chown "$uid:Users" "$personal_dir" 2>/dev/null || chown "$uid" "$personal_dir"
                 chmod 771 "$personal_dir"
@@ -85,7 +89,7 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
                         tgt_stat=$(stat -c "%d:%i" "$target_mount")
 
                         if [ "$src_stat" != "$tgt_stat" ]; then
-                            log "  ⚠️ 用户 $uid 的 [$dir_name] 挂载不一致，正在修正..."
+                            log "  ⚠️ 用户 $username [$uid] 的 [$dir_name] 挂载不一致，正在修正..."
                             umount -l "$target_mount"
                             mount --bind "$team_dir" "$target_mount"
                         else
@@ -94,7 +98,7 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
                         fi
                     else
                         mount --bind "$team_dir" "$target_mount"
-                        log "  🔗 用户 $uid 的 [$dir_name] 挂载成功。"
+                        log "  🔗 用户 $username [$uid] 的 [$dir_name] 挂载成功。"
                     fi
                 done
             done
