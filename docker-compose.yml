@@ -7,5 +7,4 @@ services:
     restart: no
     network_mode: "none"
     environment:
-      - DEFAULT_POOL_FOR_PERSONAL_DIR=2
       - CLEAN_MODE=0

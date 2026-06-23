@@ -2,9 +2,8 @@
 
 # 环境变量配置
 CLEAN_MODE="${CLEAN_MODE:-0}"
-DEFAULT_POOL_FOR_PERSONAL_DIR="${DEFAULT_POOL_FOR_PERSONAL_DIR:-2}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-60}" # 轮询间隔，默认60秒
-VERSION="${VERSION:-0.1.5}"
+VERSION="${VERSION:-0.1.7}"
 
 # 1. 输出项目 Banner
 echo "#==============================#"
@@ -13,7 +12,7 @@ echo "#     VERSION $VERSION            #"
 echo "#==============================#"
 
 # 进入宿主机命名空间执行核心逻辑
-nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR_PERSONAL_DIR" CHECK_INTERVAL="$CHECK_INTERVAL" bash << 'EOF'
+nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" CHECK_INTERVAL="$CHECK_INTERVAL" bash << 'EOF'
     shopt -s nullglob
 
     log() {
@@ -47,31 +46,7 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
             fi
 
             # ==========================================================
-            # 1. 初始化用户个人存储池父目录 (如 /vol2/1000)
-            # ==========================================================
-            personal_base="/vol${POOL_ID}/${uid}"
-            if [ ! -d "$personal_base" ]; then
-                mkdir -p "$personal_base"
-                chown "$uid:root" "$personal_base" 2>/dev/null || chown "$uid" "$personal_base"
-                chmod 771 "$personal_base"
-            fi
-
-            # ==========================================================
-            # 2. 处理“个人文件”子目录，并注入 FNOS 标准 ACL (+)
-            # ==========================================================
-            personal_dir="${personal_base}/个人文件"
-            if [ ! -d "$personal_dir" ]; then
-                log "  📁 为 $username 创建个人主目录并注入底层权限: $personal_dir"
-                mkdir -p "$personal_dir"
-                chown "$uid:Users" "$personal_dir" 2>/dev/null || chown "$uid" "$personal_dir"
-                chmod 771 "$personal_dir"
-
-                setfacl -m u::rwx,g::--x,o::--x "$personal_dir" 2>/dev/null
-                setfacl -d -m u::rwx,g::--x,o::--x "$personal_dir" 2>/dev/null
-            fi
-
-            # ==========================================================
-            # 3. 遍历团队文件挂载
+            # 1. 遍历团队文件挂载
             # ==========================================================
             for team_base in /vol*/@team; do
                 [ ! -d "$team_base" ] && continue
@@ -131,7 +106,7 @@ nsenter -t 1 -m -u -i -n env CLEAN_MODE="$CLEAN_MODE" POOL_ID="$DEFAULT_POOL_FOR
     while true; do
         if [ "$first_run_flag" = "1" ]; then
             log "=================================================="
-            log "🚀 开始首次全量扫描与初始化 (个人存储池: vol${POOL_ID})"
+            log "🚀 开始首次全量扫描与团队目录挂载初始化"
             log "=================================================="
         fi
 
